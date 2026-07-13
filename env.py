@@ -66,7 +66,10 @@ class StockTradingEnv(gym.Env):
         return self._get_observation(), {}
         
     def step(self, action):
-        # Fetch current price and calculate OLD portfolio value
+
+        '''Please note that this model is designed such that it will buy however many shares that can be 
+        bought with the current amount/balance and it will sell everything at once as well.'''
+        # Fetch current price and calculate old portfolio value
         # We use the 'Close' price at the current step for all transactions
         current_price = self.df.iloc[self.current_step]['Close']
         old_portfolio_value = self.balance + (self.shares_held * current_price)
@@ -85,11 +88,11 @@ class StockTradingEnv(gym.Env):
                 self.balance += (self.shares_held * current_price)
                 self.shares_held = 0
                 
-        # (Action 0 is Hold, do nothing)
+        # (Action 0 is Hold so we do nothing)
 
         # inc the step counter by a day
         self.current_step += 1
-
+        
         # checking the termination condition. it is true if the model reached the end of dataframe.
         done = self.current_step >= len(self.df) - 1
         # calculate new porfolio
