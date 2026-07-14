@@ -114,8 +114,6 @@ np.savez('training_metrics.npz',
          epsilons=epsilon_list)
 
 torch.save(online_net.state_dict(), 'trained_agent.pth')
-print("Model weights successfully saved to 'trained_agent.pth'")
-
 print(f"\nTraining Complete. Maximum Episode Reward: ${max_reward:.2f}")
 
 env.close()

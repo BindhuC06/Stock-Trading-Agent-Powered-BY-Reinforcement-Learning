@@ -108,7 +108,11 @@ class StockTradingEnv(gym.Env):
         
         # Reward=new-old
         reward = new_portfolio_value - old_portfolio_value
-
+        if reward<0:
+            reward=reward * 2.0 
+        else:
+            #No change
+            pass
         # next state
         if not done:
             next_state = self._get_observation()

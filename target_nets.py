@@ -10,8 +10,10 @@ class QNetwork(nn.Module):
         self.network = nn.Sequential(
             nn.Linear(state_dim,256),
             nn.ReLU(),
+            nn.Dropout(p=0.2),
             nn.Linear(256,128),
             nn.ReLU(),
+            nn.Dropout(p=0.2),
             nn.Linear(128, action_dim)
         )
         
