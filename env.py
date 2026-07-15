@@ -15,10 +15,10 @@ class StockTradingEnv(gym.Env):
         self.balance = self.initial_balance
         self.shares_held = 0
         
-        # The Action Space- 0: Hold, 1: Buy, 2: Sell
-        self.action_space = spaces.Discrete(3)
+        #updated action space for the continuous action space for the ppo
+        self.action_space=spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
         
-        # The Observation Space(State)
+        #The Observation Space(State)
         num_features = 7 
         obs_shape = (self.window_size * num_features) + 2
         #using -inf and inf to deal with the outliers
@@ -28,32 +28,40 @@ class StockTradingEnv(gym.Env):
             shape=(obs_shape,), 
             dtype=np.float32
         )
+        self.df = df.reset_index(drop=True)
+        self.close_prices = self.df['Close'].values
+        self.features_array = self.df[['Open', 'High', 'Low', 'Close', 'Volume', 'SMA_20', 'RSI_14']].values
+
+
     def _get_observation(self):
-        window_df = self.df.iloc[self.current_step - self.window_size : self.current_step]
-        # This prevents the NN from seeing absolute prices, only relative growth
-        base_price = window_df['Close'].iloc[0]
-        normalized_window = window_df.copy()
-        for col in ['Open', 'High', 'Low', 'Close']:
-            normalized_window[col] = (window_df[col] - base_price) / base_price
-        vol_min = window_df['Volume'].min()
-        vol_max = window_df['Volume'].max()
-        normalized_window['Volume'] = (window_df['Volume'] - vol_min) / (vol_max - vol_min + 1e-8) # 1e-8 prevents division by zero
+        window_data = self.features_array[self.current_step - self.window_size : self.current_step].copy()
+        base_price = window_data[0, 3]
+        raw_current_price = window_data[-1, 3]
         
-        normalized_window['SMA_20'] = (window_df['SMA_20'] - base_price) / base_price
-        # RSI is strictly 0 to 100 hence we do direct division
-        normalized_window['RSI_14'] = window_df['RSI_14'] / 100.0
-        state_features = normalized_window.values.flatten()
+        #Normalization in place 
+        window_data[:, 0:4] = (window_data[:, 0:4] - base_price) / base_price
+        # Normalize Volume (Col 4) via Min-Max scaling
+        vol_min = np.min(window_data[:, 4])
+        vol_max = np.max(window_data[:, 4])
+        window_data[:, 4] = (window_data[:, 4] - vol_min) / (vol_max - vol_min + 1e-8)
         
-        # Normalize Account Information
-        # Assuming a theoretical max balance to scale between 0 and 1
-        max_theoretical_balance = self.initial_balance * 3 
+        # Normalize SMA_20 (Col 5)
+        window_data[:, 5] = (window_data[:, 5] - base_price) / base_price
+        
+        # Normalize RSI_14 (Col 6)
+        window_data[:, 6] = window_data[:, 6] / 100.0
+        
+        # Flatten the 2D matrix into a 1D state vector for the neural network
+        state_features = window_data.flatten()
+        
+        #Normalize Account Variables
+        max_theoretical_balance = self.initial_balance * 3.0 
         norm_balance = self.balance / max_theoretical_balance
         
-        # Assuming max shares we could possibly own
-        max_shares = max_theoretical_balance / self.df['Close'].iloc[self.current_step]
-        norm_shares = self.shares_held / max_shares
+        # Calculate max possible shares using the raw, un-normalized price
+        norm_shares = self.shares_held / (max_theoretical_balance / raw_current_price)
         
-        # 4. Combine into final state vector
+        # 5. Combine and cast to required Tensor format
         state = np.append(state_features, [norm_balance, norm_shares])
         
         return state.astype(np.float32)
@@ -67,49 +75,48 @@ class StockTradingEnv(gym.Env):
         
     def step(self, action):
 
-        '''Please note that this model is designed such that it will buy however many shares that can be 
-        bought with the current amount/balance and it will sell everything at once as well.'''
-
         # Fetch current price and calculate old portfolio value
         # We use the 'Close' price at the current step for all transactions
-        current_price = self.df.iloc[self.current_step]['Close']
+        current_price = self.close_prices[self.current_step]
         old_portfolio_value = self.balance + (self.shares_held * current_price)
 
-        # action execution
-        if action == 1:  # Buy
-            # Calculate maximum whole shares we can afford
-            shares_to_buy = int(self.balance // current_price)
-            if shares_to_buy > 0:
-                self.shares_held += shares_to_buy
-                self.balance -= (shares_to_buy * current_price)
-                
-        elif action == 2:  # Sell
-            # Liquidate/sell all the shares/holdings 
-            if self.shares_held > 0:
-                self.balance += (self.shares_held * current_price)
-                self.shares_held = 0
+        action_val = action[0]
+        #Buy
+        if action_val>0:
+            # Spend a percentage of available cash based on confidence
+            spend_amount=self.balance*action_val
+            shares_to_buy=int(spend_amount // current_price)
+            if shares_to_buy>0:
+                self.shares_held+=shares_to_buy
+                self.balance-=(shares_to_buy*current_price)
+
+        # Sell Logic
+        elif action_val < 0:
+            # Liquidate a percentage of currently held shares based on confidence
+            sell_percentage = abs(action_val)
+            shares_to_sell = int(self.shares_held * sell_percentage)
+            if shares_to_sell > 0:
+                self.balance += (shares_to_sell * current_price)
+                self.shares_held -= shares_to_sell
                 
         # (Action 0 is Hold so we do nothing)
-
         # inc the step counter by a day
         self.current_step += 1
-        
         # checking the termination condition. it is true when the model reaches the end of dataframe.
         done = self.current_step >= len(self.df) - 1
         
         # calculate new porfolio
         if not done:
-            next_price = self.df.iloc[self.current_step]['Close']
+            next_price = self.close_prices[self.current_step]
         else:
             # If done, use the last known price to evaluate final portfolio
             next_price = current_price 
 
         new_portfolio_value = self.balance + (self.shares_held * next_price)
-        
         # Reward=new-old
         reward = new_portfolio_value - old_portfolio_value
         if reward<0:
-            reward=reward * 2.0 
+            reward=reward*1.5 
         else:
             #No change
             pass
@@ -127,7 +134,4 @@ class StockTradingEnv(gym.Env):
             'balance': self.balance,
             'shares_held': self.shares_held
         }
-        terminated = done
-        truncated = False
-
-        return next_state, reward, terminated, truncated, info
+        return next_state, float(reward), done, False, info
